@@ -1,0 +1,93 @@
+name: Temporary Encrypted VPN
+
+# This allows you to run the workflow manually from the Actions tab
+on:
+  workflow_dispatch:
+
+jobs:
+  vpn_session:
+    runs-on: ubuntu-latest
+    name: Start Temporary VPN Session
+
+    steps:
+      - name: 1. Install WireGuard and QR Code Generator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wireguard qrencode
+
+      - name: 2. Generate Server and Client Keys
+        run: |
+          # Generate server's private and public keys
+          wg genkey | tee server_private_key | wg pubkey > server_public_key
+          # Generate client's private and public keys
+          wg genkey | tee client_private_key | wg pubkey > client_public_key
+          echo "✅ Keys generated successfully."
+
+      - name: 3. Create WireGuard Server Configuration
+        run: |
+          SERVER_PRIVATE_KEY=$(cat server_private_key)
+          CLIENT_PUBLIC_KEY=$(cat client_public_key)
+
+          sudo bash -c "cat > /etc/wireguard/wg0.conf <<EOF
+          [Interface]
+          Address = 10.0.0.1/24
+          SaveConfig = true
+          PrivateKey = ${SERVER_PRIVATE_KEY}
+          ListenPort = 51820
+          PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+          PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+          [Peer]
+          PublicKey = ${CLIENT_PUBLIC_KEY}
+          AllowedIPs = 10.0.0.2/32
+          EOF"
+          echo "✅ Server configuration created."
+
+      - name: 4. Start WireGuard Server
+        run: |
+          sudo wg-quick up wg0
+          echo "✅ WireGuard server started."
+          echo "Server status:"
+          sudo wg show
+
+      - name: 5. Generate Client Configuration
+        id: client_config
+        run: |
+          CLIENT_PRIVATE_KEY=$(cat client_private_key)
+          SERVER_PUBLIC_KEY=$(cat server_public_key)
+          # Get the public IP of the GitHub runner
+          SERVER_PUBLIC_IP=$(curl -s ifconfig.me)
+
+          cat > client.conf <<EOF
+          [Interface]
+          PrivateKey = ${CLIENT_PRIVATE_KEY}
+          Address = 10.0.0.2/24
+          DNS = 1.1.1.1
+
+          [Peer]
+          PublicKey = ${SERVER_PUBLIC_KEY}
+          AllowedIPs = 0.0.0.0/0
+          Endpoint = ${SERVER_PUBLIC_IP}:51820
+          EOF
+          echo "✅ Client configuration file (client.conf) generated."
+
+      - name: 6. Display Client Config as QR Code
+        run: |
+          echo "Scan the QR code below with the WireGuard mobile app."
+          echo "Or download the 'client.conf' artifact for desktop clients."
+          echo "----------------------------------------------------------------"
+          qrencode -t ansiutf8 < client.conf
+          echo "----------------------------------------------------------------"
+
+      - name: 7. Upload Client Config as Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: client-config
+          path: client.conf
+
+      - name: 8. Keep VPN Session Alive
+        run: |
+          echo "✅ VPN is now active."
+          echo "This job will stay alive for approximately 6 hours."
+          echo "To terminate the VPN, cancel the workflow run on GitHub."
+          sleep 21000 # Keep the job running for ~5.8 hours
