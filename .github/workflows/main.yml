@@ -74,13 +74,13 @@ jobs:
       - name: 6. Display Client Config as QR Code
         run: |
           echo "Scan the QR code below with the WireGuard mobile app."
-          echo "Or download the 'client.conf' artifact for desktop clients."
+          echo "This is the fastest way to connect."
           echo "----------------------------------------------------------------"
           qrencode -t ansiutf8 < client.conf
           echo "----------------------------------------------------------------"
 
       - name: 7. Upload Client Config as Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: client-config
           path: client.conf
@@ -88,6 +88,6 @@ jobs:
       - name: 8. Keep VPN Session Alive
         run: |
           echo "✅ VPN is now active."
-          echo "This job will stay alive for approximately 6 hours."
-          echo "To terminate the VPN, cancel the workflow run on GitHub."
+          echo "The downloadable 'client-config' artifact will appear on the workflow summary page AFTER this job finishes."
+          echo "To end the VPN and get the artifact, cancel the workflow run on GitHub."
           sleep 21000 # Keep the job running for ~5.8 hours
