@@ -1,6 +1,5 @@
-name: Temporary Encrypted VPN
+name: Temporary Encrypted VPN with ngrok
 
-# This allows you to run the workflow manually from the Actions tab
 on:
   workflow_dispatch:
 
@@ -10,20 +9,26 @@ jobs:
     name: Start Temporary VPN Session
 
     steps:
-      - name: 1. Install WireGuard and QR Code Generator
+      - name: 1. Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wireguard qrencode
+          sudo apt-get install -y wireguard qrencode jq
 
-      - name: 2. Generate Server and Client Keys
+      - name: 2. Install and Configure ngrok
         run: |
-          # Generate server's private and public keys
+          # Download and unzip ngrok
+          curl -s https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | sudo tar xzvf - -C /usr/local/bin
+          # Add the authtoken from GitHub Secrets
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTHTOKEN }}
+          echo "✅ ngrok installed and configured."
+
+      - name: 3. Generate Server and Client Keys
+        run: |
           wg genkey | tee server_private_key | wg pubkey > server_public_key
-          # Generate client's private and public keys
           wg genkey | tee client_private_key | wg pubkey > client_public_key
           echo "✅ Keys generated successfully."
 
-      - name: 3. Create WireGuard Server Configuration
+      - name: 4. Create WireGuard Server Configuration
         run: |
           SERVER_PRIVATE_KEY=$(cat server_private_key)
           CLIENT_PUBLIC_KEY=$(cat client_public_key)
@@ -35,7 +40,7 @@ jobs:
           PrivateKey = ${SERVER_PRIVATE_KEY}
           ListenPort = 51820
           PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-          PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+          PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUADE
 
           [Peer]
           PublicKey = ${CLIENT_PUBLIC_KEY}
@@ -43,20 +48,30 @@ jobs:
           EOF"
           echo "✅ Server configuration created."
 
-      - name: 4. Start WireGuard Server
+      - name: 5. Start WireGuard and ngrok Tunnel
         run: |
+          # Start WireGuard server
           sudo wg-quick up wg0
           echo "✅ WireGuard server started."
-          echo "Server status:"
-          sudo wg show
+          # Start ngrok TCP tunnel in the background
+          nohup ngrok tcp 51820 &
+          sleep 5 # Give ngrok time to start up and establish the tunnel
+          echo "✅ ngrok tunnel started."
 
-      - name: 5. Generate Client Configuration
+      - name: 6. Generate Client Configuration
         id: client_config
         run: |
           CLIENT_PRIVATE_KEY=$(cat client_private_key)
           SERVER_PUBLIC_KEY=$(cat server_public_key)
-          # Get the public IP of the GitHub runner
-          SERVER_PUBLIC_IP=$(curl -s ifconfig.me)
+          # Fetch the ngrok tunnel's public address using the local ngrok API
+          NGROK_ENDPOINT=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
+
+          if [ -z "$NGROK_ENDPOINT" ] || [ "$NGROK_ENDPOINT" = "null" ]; then
+            echo "::error::Failed to get ngrok endpoint. ngrok may not have started correctly."
+            exit 1
+          fi
+          
+          echo "✅ ngrok endpoint is: $NGROK_ENDPOINT"
 
           cat > client.conf <<EOF
           [Interface]
@@ -67,27 +82,28 @@ jobs:
           [Peer]
           PublicKey = ${SERVER_PUBLIC_KEY}
           AllowedIPs = 0.0.0.0/0
-          Endpoint = ${SERVER_PUBLIC_IP}:51820
+          Endpoint = ${NGROK_ENDPOINT}
           EOF
           echo "✅ Client configuration file (client.conf) generated."
 
-      - name: 6. Display Client Config as QR Code
+      - name: 7. Display Client Config as QR Code
         run: |
           echo "Scan the QR code below with the WireGuard mobile app."
-          echo "This is the fastest way to connect."
           echo "----------------------------------------------------------------"
           qrencode -t ansiutf8 < client.conf
           echo "----------------------------------------------------------------"
 
-      - name: 7. Upload Client Config as Artifact
+      - name: 8. Upload Client Config as Artifact
         uses: actions/upload-artifact@v4
         with:
           name: client-config
           path: client.conf
 
-      - name: 8. Keep VPN Session Alive
+      - name: 9. Keep VPN Session Alive
         run: |
-          echo "✅ VPN is now active."
-          echo "The downloadable 'client-config' artifact will appear on the workflow summary page AFTER this job finishes."
-          echo "To end the VPN and get the artifact, cancel the workflow run on GitHub."
-          sleep 21000 # Keep the job running for ~5.8 hours
+          echo "✅ VPN is now active through ngrok."
+          echo "This job will stay alive for approximately 6 hours."
+          echo "To terminate the VPN, cancel the workflow run on GitHub."
+          sudo wg show
+          curl -s http://localhost:4040/api/tunnels
+          sleep 21000
